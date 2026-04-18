@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"time"
 
 	"git.sr.ht/~rjarry/aerc/lib/auth"
+	"git.sr.ht/~rjarry/aerc/lib/proxy"
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-smtp"
 	"github.com/pkg/errors"
@@ -16,19 +18,23 @@ import (
 func connectSmtp(starttls bool, host string, domain string) (*smtp.Client, error) {
 	serverName := host
 	if !strings.ContainsRune(host, ':') {
-		host += ":587" // Default to submission port
+		host += ":587"
 	} else {
 		serverName = host[:strings.IndexRune(host, ':')]
 	}
-	var conn *smtp.Client
-	var err error
-	if starttls {
-		conn, err = smtp.DialStartTLS(host, &tls.Config{ServerName: serverName})
-	} else {
-		conn, err = smtp.Dial(host)
-	}
+	netConn, err := proxy.DialWithProxy("tcp", host, 30*time.Second)
 	if err != nil {
 		return nil, errors.Wrap(err, "smtp.Dial")
+	}
+	var conn *smtp.Client
+	if starttls {
+		conn, err = smtp.NewClientStartTLS(netConn, &tls.Config{ServerName: serverName})
+		if err != nil {
+			netConn.Close()
+			return nil, errors.Wrap(err, "smtp.Dial")
+		}
+	} else {
+		conn = smtp.NewClient(netConn)
 	}
 	if domain != "" {
 		err := conn.Hello(domain)
@@ -43,17 +49,19 @@ func connectSmtp(starttls bool, host string, domain string) (*smtp.Client, error
 func connectSmtps(host string, domain string, insecure bool) (*smtp.Client, error) {
 	serverName := host
 	if !strings.ContainsRune(host, ':') {
-		host += ":465" // Default to smtps port
+		host += ":465"
 	} else {
 		serverName = host[:strings.IndexRune(host, ':')]
 	}
-	conn, err := smtp.DialTLS(host, &tls.Config{
-		ServerName:         serverName,
-		InsecureSkipVerify: insecure,
-	})
+	netConn, err := proxy.DialWithProxy("tcp", host, 30*time.Second)
 	if err != nil {
 		return nil, errors.Wrap(err, "smtp.DialTLS")
 	}
+	tlsConn := tls.Client(netConn, &tls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: insecure,
+	})
+	conn := smtp.NewClient(tlsConn)
 	if domain != "" {
 		err := conn.Hello(domain)
 		if err != nil {

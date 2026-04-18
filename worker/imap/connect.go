@@ -11,6 +11,7 @@ import (
 	"git.sr.ht/~rjarry/aerc/lib"
 	"git.sr.ht/~rjarry/aerc/lib/auth"
 	"git.sr.ht/~rjarry/aerc/lib/log"
+	"git.sr.ht/~rjarry/aerc/lib/proxy"
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 )
@@ -20,7 +21,7 @@ import (
 // in the imap.SelectedState.
 func (w *IMAPWorker) connect() (*client.Client, error) {
 	var (
-		conn *net.TCPConn
+		conn net.Conn
 		err  error
 		c    *client.Client
 	)
@@ -35,7 +36,7 @@ func (w *IMAPWorker) connect() (*client.Client, error) {
 		addr += ":" + protocol
 	}
 
-	conn, err = newTCPConn(addr, w.config.connection_timeout)
+	conn, err = proxy.DialWithProxy("tcp", addr, w.config.connection_timeout)
 	if conn == nil || err != nil {
 		return nil, err
 	}
@@ -48,8 +49,8 @@ func (w *IMAPWorker) connect() (*client.Client, error) {
 		}
 	}
 
-	if w.config.keepalive_period > 0 {
-		err = w.setKeepaliveParameters(conn)
+	if tcpConn, ok := conn.(*net.TCPConn); ok && w.config.keepalive_period > 0 {
+		err = w.setKeepaliveParameters(tcpConn)
 		if err != nil {
 			return nil, err
 		}
@@ -160,46 +161,6 @@ func (w *IMAPWorker) connect() (*client.Client, error) {
 	return c, nil
 }
 
-// newTCPConn establishes a new tcp connection. Timeout will ensure that the
-// function does not hang when there is no connection. If there is a timeout,
-// but a valid connection is eventually returned, ensure that it is properly
-// closed.
-func newTCPConn(addr string, timeout time.Duration) (*net.TCPConn, error) {
-	errTCPTimeout := fmt.Errorf("tcp connection timeout")
-
-	type tcpConn struct {
-		conn *net.TCPConn
-		err  error
-	}
-
-	done := make(chan tcpConn)
-	go func() {
-		defer log.PanicHandler()
-
-		newConn, err := net.Dial("tcp", addr)
-		if err != nil {
-			done <- tcpConn{nil, err}
-			return
-		}
-		done <- tcpConn{newConn.(*net.TCPConn), nil}
-	}()
-
-	select {
-	case <-time.After(timeout):
-		go func() {
-			defer log.PanicHandler()
-			if tcpResult := <-done; tcpResult.conn != nil {
-				tcpResult.conn.Close()
-			}
-		}()
-		return nil, errTCPTimeout
-	case tcpResult := <-done:
-		if tcpResult.conn == nil || tcpResult.err != nil {
-			return nil, tcpResult.err
-		}
-		return tcpResult.conn, nil
-	}
-}
 
 // Set additional keepalive parameters.
 // Uses new interfaces introduced in Go1.11, which let us get connection's file
