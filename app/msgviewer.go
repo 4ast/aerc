@@ -50,12 +50,13 @@ var supportedImageTypes = []string{
 var _ ProvidesMessages = (*MessageViewer)(nil)
 
 type MessageViewer struct {
-	acct     *AccountView
-	grid     *ui.Grid
-	switcher *PartSwitcher
-	msg      lib.MessageView
-	uiConfig *config.UIConfig
-	envelope *models.Envelope
+	acct       *AccountView
+	grid       *ui.Grid
+	switcher   *PartSwitcher
+	msg        lib.MessageView
+	uiConfig   *config.UIConfig
+	envelope   *models.Envelope
+	showQuotes bool
 }
 
 func NewMessageViewer(
@@ -227,7 +228,7 @@ func fmtHeader(msg *models.MessageInfo, header string,
 
 func enumerateParts(
 	acct *AccountView, msg lib.MessageView,
-	body *models.BodyStructure, index []int,
+	body *models.BodyStructure, index []int, showQuotes bool,
 ) ([]*PartViewer, error) {
 	var parts []*PartViewer
 	for i, part := range body.Parts {
@@ -237,14 +238,14 @@ func enumerateParts(
 			pv := &PartViewer{part: part}
 			parts = append(parts, pv)
 			subParts, err := enumerateParts(
-				acct, msg, part, curindex)
+				acct, msg, part, curindex, showQuotes)
 			if err != nil {
 				return nil, err
 			}
 			parts = append(parts, subParts...)
 			continue
 		}
-		pv, err := NewPartViewer(acct, msg, part, curindex)
+		pv, err := NewPartViewer(acct, msg, part, curindex, showQuotes)
 		if err != nil {
 			return nil, err
 		}
@@ -255,9 +256,11 @@ func enumerateParts(
 
 func createSwitcher(
 	acct *AccountView, switcher *PartSwitcher, msg lib.MessageView,
+	showQuotes ...bool,
 ) error {
 	var err error
 	switcher.selected = -1
+	sq := len(showQuotes) > 0 && showQuotes[0]
 
 	if msg.MessageInfo().Error != nil {
 		return fmt.Errorf("could not view message: %w", msg.MessageInfo().Error)
@@ -270,14 +273,14 @@ func createSwitcher(
 	viewerConfig := config.Viewer().ForEnvelope(msg.MessageInfo().Envelope)
 	if len(msg.BodyStructure().Parts) == 0 {
 		switcher.selected = 0
-		pv, err := NewPartViewer(acct, msg, msg.BodyStructure(), nil)
+		pv, err := NewPartViewer(acct, msg, msg.BodyStructure(), nil, sq)
 		if err != nil {
 			return err
 		}
 		switcher.parts = []*PartViewer{pv}
 	} else {
 		switcher.parts, err = enumerateParts(acct, msg,
-			msg.BodyStructure(), []int{})
+			msg.BodyStructure(), []int{}, sq)
 		if err != nil {
 			return err
 		}
@@ -374,11 +377,29 @@ func (mv *MessageViewer) ToggleHeaders() {
 	switcher.Cleanup()
 	viewerConfig := mv.viewerConfig()
 	viewerConfig.ShowHeaders = !viewerConfig.ShowHeaders
-	err := createSwitcher(mv.acct, switcher, mv.msg)
+	err := createSwitcher(mv.acct, switcher, mv.msg, mv.showQuotes)
 	if err != nil {
 		log.Errorf("cannot create switcher: %v", err)
 	}
 	switcher.Invalidate()
+}
+
+func (mv *MessageViewer) ToggleQuotes() {
+	if mv.switcher == nil {
+		return
+	}
+	mv.showQuotes = !mv.showQuotes
+	switcher := mv.switcher
+	switcher.Cleanup()
+	err := createSwitcher(mv.acct, switcher, mv.msg, mv.showQuotes)
+	if err != nil {
+		log.Errorf("cannot create switcher: %v", err)
+	}
+	switcher.Invalidate()
+}
+
+func (mv *MessageViewer) ShowQuotes() bool {
+	return mv.showQuotes
 }
 
 func (mv *MessageViewer) SelectedMessagePart() *PartInfo {
@@ -483,7 +504,7 @@ const copying int32 = 1
 
 func NewPartViewer(
 	acct *AccountView, msg lib.MessageView, part *models.BodyStructure,
-	curindex []int,
+	curindex []int, showQuotes bool,
 ) (*PartViewer, error) {
 	var (
 		filter  *exec.Cmd
@@ -562,6 +583,9 @@ func NewPartViewer(
 			fmt.Sprintf("AERC_SUBJECT=%s", info.Envelope.Subject))
 		filter.Env = append(filter.Env, fmt.Sprintf("AERC_FROM=%s",
 			format.FormatAddresses(info.Envelope.From)))
+		if showQuotes {
+			filter.Env = append(filter.Env, "AERC_SHOW_QUOTES=1")
+		}
 		filter.Env = append(filter.Env, fmt.Sprintf("AERC_STYLESET=%s",
 			acct.UiConfig().StyleSetPath()))
 		if config.General().EnableOSC8 {
